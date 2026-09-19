@@ -13,7 +13,7 @@ from pathlib import Path
 from .config import BACKEND_ROOT, settings
 
 SOURCE = BACKEND_ROOT.parent / "demo" / "customer-app"
-FAKE_ENV = "ORDERS_API_URL=http://localhost:4010\nANTHROPIC_API_KEY=sk-ant-demo-0000-not-a-real-key\n"
+FAKE_ENV = "ORDERS_API_URL=http://localhost:4010\nANTHROPIC_API_KEY=demo-anthropic-value\n"
 
 
 def materialize(target: Path | None = None) -> Path:

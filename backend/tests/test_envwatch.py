@@ -39,9 +39,9 @@ def test_classify_by_name_platform_and_value_prefix():
 
 
 def test_snapshot_never_contains_the_value(tmp_path):
-    secret = "sk-ant-super-secret-value-123"
+    secret = "value-that-must-never-be-stored"
     snapshot = _snapshot(tmp_path, f"ANTHROPIC_API_KEY={secret}\nEMPTY_TOKEN=\nUNRELATED=hello\n")
-    assert secret not in repr(snapshot) and "super-secret" not in repr(envwatch.public_view(snapshot))
+    assert secret not in repr(snapshot) and "must-never-be-stored" not in repr(envwatch.public_view(snapshot))
     assert snapshot["ANTHROPIC_API_KEY"]["fingerprint"] and snapshot["EMPTY_TOKEN"]["fingerprint"] is None
     assert "UNRELATED" not in snapshot  # not credential-like, not tracked
 
@@ -119,13 +119,13 @@ def test_switch_is_sensed_asked_confirmed_and_migrated(tmp_path, monkeypatch, cu
 
     httpx.post(f"{PROVIDER}/admin/reset")
     repo_dir = customer_app
-    (repo_dir / ".env").write_text("ORDERS_API_URL=http://localhost:4010\nANTHROPIC_API_KEY=sk-ant-demo-0000\n")
+    (repo_dir / ".env").write_text("ORDERS_API_URL=http://localhost:4010\nANTHROPIC_API_KEY=demo-anthropic-value\n")
 
     repo = service.connect_repo(local_path=str(repo_dir))
     assert envwatch.check_repo(repo) == []  # nothing changed yet
 
     # The developer moves to OpenAI: the variable name and the value both change.
-    (repo_dir / ".env").write_text("ORDERS_API_URL=http://localhost:4010\nOPENAI_API_KEY=sk-proj-demo-1111\n")
+    (repo_dir / ".env").write_text("ORDERS_API_URL=http://localhost:4010\nOPENAI_API_KEY=demo-openai-value\n")
     [change] = envwatch.check_repo(repo)
     assert change["status"] == "pending" and change["kind"] == "provider-switched"
     assert envwatch.check_repo(repo) == []  # asked once, not on every tick
@@ -159,7 +159,7 @@ def test_switch_is_sensed_asked_confirmed_and_migrated(tmp_path, monkeypatch, cu
     assert {"src/lib/assistant.ts", "src/services/support.ts", "tests/assistant.test.ts", ".env.example"} <= set(paths)
     assert not any(p.startswith("src/lib/orders") or p == ".env" for p in paths)   # other integrations and real secrets stay out
     assert paths["tests/assistant.test.ts"]["read_only"] is False                  # doubles may be updated in a provider switch
-    assert "sk-proj-demo-1111" not in repr(sent) and "sk-ant-demo-0000" not in repr(sent)
+    assert "demo-openai-value" not in repr(sent) and "demo-anthropic-value" not in repr(sent)
     assert sent["env_change"]["details"]["to_env"] == "OPENAI_API_KEY"
 
     assert migration["validation"]["after"]["passed"] is True, migration["validation"]["after"]
