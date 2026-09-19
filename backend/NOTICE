@@ -1,0 +1,14 @@
+Chowkidaar backend
+
+app/schema/infer.py, app/schema/hash.py and app/schema/diff.py are Python ports of
+@schema-watch/core (packages/core/src/{infer,hash,diff}.ts)
+Copyright the Schema-Watch authors, licensed under the Apache License, Version 2.0.
+https://github.com/HenryMorganDibie/schema-watch
+Changes: translated from TypeScript to Python; schema nodes are plain dicts; added
+rename-candidate detection and endpoint-level change kinds.
+
+The rename-candidate heuristic is inspired by api-schema-differentiator (MIT),
+https://github.com/77QAlab/api-schema-differentiator. No code was copied.
+
+The code graph is built with Graphify (graphifyy, Apache-2.0),
+https://github.com/Graphify-Labs/graphify, used as an unmodified dependency.

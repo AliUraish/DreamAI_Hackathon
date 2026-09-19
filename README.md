@@ -1,110 +1,192 @@
-# Chowkidaar frontend
+# Chowkidaar
 
-The API pipeline, shown on the repo's code graph. Vite + React + TypeScript, a custom canvas renderer over `d3-force`.
+**APIs that maintain their own integrations.**
+
+*Chowkidaar* means watchman. It stands between a codebase and every external API it depends on
+(OpenAI, Stripe, Supabase, Clerk, Twilio, ...). One private AI agent per repository watches that
+repository's API pipelines, acts when it is safe, asks when it is not, and opens tested pull requests.
+It never merges.
+
+Coding assistants fix an integration after someone notices it broke and asks. Chowkidaar starts from
+the change itself: nobody has to notice, and nobody has to prompt.
+
+```
+        senses                          understands                       acts
+┌──────────────────────┐      ┌──────────────────────────┐      ┌────────────────────────┐
+│ API contract drift   │      │ the API pipeline graph:  │      │ reads the provider docs│
+│ environment changes  │ ───► │ provider → call sites →  │ ───► │ writes the change      │
+│ traffic and pressure │      │ what depends on them     │      │ runs YOUR checks       │
+└──────────────────────┘      └──────────────────────────┘      │ opens the pull request │
+                                                                │ handles review, merge  │
+                                                                └────────────────────────┘
+```
+
+## What it does
+
+**Connects without seeing your secrets.** Onboarding gives you an API key (shown once; only its hash is
+stored). One command inside your project reports the repository and its credential-like environment
+variables. Each value is reduced on your machine to a keyed hash; only the name and that fingerprint
+are sent.
+
+**Maps only what matters.** It finds every API call site (AST search with ast-grep), builds the code
+graph locally (Graphify, tree-sitter, no LLM), and keeps the API pipeline: the provider, the functions
+that call it, and everything that depends on those. On a real 888-node repository the pipeline graph is
+61 nodes. The graph grows on screen from the API outwards. Click any node or connection and the agent
+explains what it does there and what breaks if the API changes.
+
+**Watches with three senses.**
+
+| Sense | How | What happens |
+|---|---|---|
+| API contract drift | Polls live responses, infers the response shape, hashes and diffs it. Reads `Deprecation`, `Sunset` and `Link rel="successor-version"` headers. Accepts provider release webhooks. | Breaking change → migration run |
+| Environment changes | A variable's name says which provider it is; the hash of its value says whether it is the same credential. | Same credential, new name → handled automatically. Different provider (Anthropic → OpenAI) → asks, and waits. A new key of a kind you already use → recommends a better route. |
+| Traffic | Calls per second, p95 and load on every function, drawn as moving dots and load rings. Every 5 minutes the agent silently audits the whole pipeline and writes an audit log. | A node past its budget → pressure review |
+
+**Acts, with your checks as the gate.** The model writes whole files; Chowkidaar runs the project's own
+tests, typecheck and build in a throwaway clone, then opens a GitHub pull request with the evidence.
+If validation fails twice it opens an *investigation* PR that changes no application code.
+
+**Follows through.** Review comments on the PR become another round of work on the same branch
+(comments from deploy and CI bots are ignored). After a merge it re-runs the checks on the base branch
+before marking the integration healthy.
+
+**One agent per repository.** Each has its own context and memory; agents run in parallel and share
+nothing. The "Agents working" panel shows who is busy and who is waiting for you.
+
+## Principles
+
+- **Numbers come from measurement or simulation, never from the model's opinion.** Performance gains in
+  a review are the output of a queueing model (M/M/c) on observed rates, and are labelled *simulated*.
+  There is no invented "confidence: 94%".
+- **Your checks decide.** A check that already fails before the change is reported, not hidden. If
+  nothing can validate a change, no PR is opened.
+- **Secrets stay where they are.** Values are never stored, logged, returned by the API or sent to the
+  model. Real `.env` files never reach the model.
+- **Small blast radius.** The model only sees the files in the affected pipeline, may only write files
+  it was given, and tests are read-only context (except test doubles in a provider switch).
+- **It never merges, and it never touches your checkout.** All work happens in disposable clones under
+  `~/.chowkidaar`.
+
+## Quick start
+
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), Node 20.19+ (22 recommended), git. Optional: the GitHub CLI
+(`gh`), whose login is used as the GitHub token if you do not set one.
 
 ```bash
+# 1. backend  (http://localhost:8000, API docs at /docs)
+cd backend
+cp .env.example .env          # set OPENAI_KEY and, optionally, NEON_DB
+uv run uvicorn app.main:app --port 8000
+
+# 2. frontend (http://localhost:5173)
+cd frontend
 npm install
-npm run dev        # http://localhost:5173
+npm run dev
 ```
 
-There is no bundled data. Everything on screen comes from the Chowkidaar backend (`../backend`, FastAPI on :8000, proxied
-under `/api`). With the backend down the page says so and reconnects by itself.
+Open http://localhost:5173, create a workspace, and copy the connect command it shows. Run it inside
+the project you want watched:
 
 ```bash
-# from the repo root, in two more terminals
-uv run --project backend uvicorn app.main:app --app-dir backend --port 8000
-uv run --project backend uvicorn main:app --app-dir demo/provider --port 4010     # the demo API provider
+curl -fsSL http://localhost:8000/api/v1/connector.py | CHOWKIDAAR_API_KEY=ck_live_... python3 - --watch
 ```
 
-## Shape of the app
+The project opens in the UI and its pipeline graph grows in. `--watch` keeps reporting environment
+changes. You can also connect a project from the UI by `owner/repo` or a local path.
 
-No player: runs are driven by the agents, the UI shows where they stand. First run is onboarding (workspace → API key, shown once →
-connect command). Each project has its own graph, runs and agent; the project switcher is in the top bar and "Agents working" sits
-top right. A project's graph is not shown at once: it grows from the API outwards (`order` from the backend) every time the project
-is opened. Click a node **or a connection** and the project's agent explains it. Open issues are red/amber on the graph even with no
-run on screen (`status` from the backend). The PR stage shows review comments, the agent's fix commits, and the verified merge.
+### Configuration (`backend/.env`)
 
-## Driving it
-
-| | |
+| Variable | Purpose |
 |---|---|
-| `/` | find a node |
-| `F` | fit the graph · `esc` deselect |
+| `OPENAI_KEY` | Writes migrations, addresses PR reviews, words explanations. Without it Chowkidaar still maps, watches and explains from graph facts, and opens investigation PRs instead of code changes. |
+| `NEON_DB` | Postgres connection string. Without it a local SQLite file is used. |
+| `CHOWKIDAAR_GITHUB_TOKEN` | For pushing branches and opening PRs. Falls back to `gh auth token`. |
+| `CHOWKIDAAR_OPEN_PRS` | `false` prepares branches locally and never pushes. |
+| `CHOWKIDAAR_DATA_DIR` | Where working copies, graphs, audit logs and keys live. Default `~/.chowkidaar`. |
+| `CHOWKIDAAR_OPENAI_MODEL` | Default `gpt-5`. |
+| `CHOWKIDAAR_AUDIT_SECONDS` / `_POLL_INTERVAL_SECONDS` / `_PR_WATCH_SECONDS` | Audit (300), contract polling (off; 21600 = 6 h), PR watching (20). |
 
-On the canvas: drag to pan, scroll or pinch to zoom, drag a node to move it, click to inspect, double-click to zoom into its neighbourhood. Hovering a breaking change, a file row, a doc excerpt, a test or an integration lights the matching nodes; hovering a traced file lights its path back to the API. Panning or zooming hands you the camera; the crosshair button gives it back to the pipeline.
+See `backend/.env.example` for the rest.
 
-## How it works
+## Try it without a real project
 
-A run is an append-only list of `PipelineEvent`s (`src/lib/types.ts`). The whole UI, canvas included, is a pure function of `(events, clock)` (`src/lib/derive.ts`), which is why the rail can scrub backwards and every animation replays identically. The live stream and a replayed past run feed the same log.
+A demo API provider and a demo customer app are included.
+
+```bash
+# the demo provider (Acme Orders API, v1 with a switch to v2)
+uv run --project backend uvicorn main:app --app-dir demo/provider --port 4010
+(cd demo/customer-app && npm install)      # once
+
+./demo/run_demo.sh            # the provider ships v2 and announces it
+./demo/run_demo.sh poll       # it ships silently; Chowkidaar notices on its own
+./demo/run_env_demo.sh        # an env credential changes provider: sense → ask → confirm → migrate
+```
+
+The v2 release renames `name → customer_name` and `price → amount`, and moves `/v1/orders → /v2/orders`.
+The shape diff sees two renames. Only the migration guide says `amount` is integer cents, not dollars.
+A rename-only patch prints `$1999.00` instead of `$19.99`, fails the app's tests against the live API,
+and is never shipped.
+
+In the UI, the Monitoring panel has **Run a simulation**: normal load, then peak, along the project's
+real call graph. The agent measures every node, says what holds and what is weak, and recommends a
+change with simulated before/after numbers. While traffic flows, call sites past half their budget get
+a dashed "add a node here" proposal drawn on the graph. Nothing is changed until you press Apply.
+
+## Traffic from a real service
+
+`GET /api/v1/chowkidaar-traffic.ts` is a small reporter for TypeScript services (Cloudflare Workers,
+Node, Bun, Deno). It wraps the functions you name, records how long each call took and whether it
+threw, and posts batches to `POST /api/v1/traffic`. It never reads arguments or return values.
+Reported traffic replaces simulated traffic; the two are never mixed, and the UI always says which one
+it is showing.
+
+## Repository layout
 
 ```
-src/lib        types, the event reducer, the zustand store (clock, selection, camera requests)
-src/data       api.ts (typed backend client), source.ts (graph + event stream + dashboard polling)
-src/graph      layout.ts (d3-force), render.ts (canvas drawing), GraphCanvas.tsx (input, camera, frame loop)
-src/ui         stage panel, inspector, pipeline rail, integrations, activity feed, search, confirm prompt
+backend/     FastAPI service: sensing, graph, agents, pipelines, GitHub, audits   (backend/README.md)
+frontend/    React + canvas UI: the pipeline graph, runs, reviews, prompts         (frontend/README.md)
+demo/        provider/      mock Acme Orders API (v1 → v2)
+             customer-app/  a small TypeScript app that depends on it (plain files;
+                            its git repository is created on demand under ~/.chowkidaar)
 ```
 
-## What the UI does with the backend
-
-| In the UI | Backend |
+| Backend module | Role |
 |---|---|
-| Graph | `GET /api/graph`: only the maintained API pipelines, never the whole repo |
-| A run playing on the rail | `GET /api/events` (SSE), one `PipelineEvent` per message |
-| Integrations list, statuses, "polled 2m ago" | `GET /api/dashboard`, every 5 s and after each run |
-| **"Switch from Anthropic to OpenAI?"** prompt | `confirm.request` / `confirm.resolved` on the stream, `pending_confirmations` on the dashboard; the buttons call `POST /api/env-changes/{id}/confirm` or `/dismiss`. Nothing runs before the answer. |
-| Poll contracts now | `POST /api/check-all` |
-| Connect a repository (shown when none is connected) | `POST /api/repos` with `owner/repo` or a local path |
-| Last run: replay | `GET /api/migrations`, then `ui_events` of `GET /api/migrations/{id}` |
-| Demo provider: ship v2, ship silently then poll, reset | `POST /api/demo/release`, `/api/demo/reset`; hidden unless the demo provider is up and the repo calls it |
-| `live` / `backend offline · retrying` in the top bar | state of the event stream |
+| `scanner.py`, `graph.py` | API call sites (ast-grep); Graphify code graph, sliced to the pipeline |
+| `schema/`, `poller.py` | Response-shape inference, hashing, diff, rename candidates; drift probes |
+| `envwatch.py`, `workspace.py` | Environment sensing with fingerprints; workspace and API keys |
+| `traffic.py`, `audit.py`, `simrun.py` | Traffic store and simulator (M/M/c); silent audits; one-button simulation |
+| `pipeline.py`, `perf.py`, `repair.py` | Migration runs; pressure reviews; the model's patch |
+| `prs.py`, `gitops.py` | PR lifecycle (review rounds, merge verification); git and GitHub |
+| `agents.py`, `explain.py`, `notify.py` | Per-repo agents with private memory; explanations; notifications |
+| `db.py`, `llm.py` | Postgres/SQLite with an in-memory mirror and write-behind; OpenAI first, Anthropic fallback |
 
-A reload in the middle of a run resumes it (the page asks for `?replay=latest` when the newest migration is still running);
-`/?replay` forces that.
+## Tests
 
-## The two contracts
-
-**`GET /api/graph`** returns graphify's `graph.json` as is (node-link: `nodes[{id, label, community, community_name, file_type, source_file, source_location}]`, `links[{source, target, relation}]`). Graphify does not model outbound HTTP calls, so the backend adds:
-
-- one node per provider: `{ "id": "provider:orders-api", "label": "Orders API", "file_type": "provider", "version": "v1", "community": 0 }`
-- one link per call site: `{ "source": "<function or file id>", "target": "provider:orders-api", "relation": "calls_api" }`
-
-**`GET /api/events`** is a `text/event-stream`. Each message's `data` is one `PipelineEvent` as JSON, without `at` (the frontend stamps arrival time). In order:
-
-```jsonc
-{ "t": "stage", "stage": "detect" }
-{ "t": "release", "providerId": "provider:orders-api", "from": "v1", "to": "v2", "source": "openapi.yaml changed", "msg": "API release detected" }
-{ "t": "stage", "stage": "diff" }
-{ "t": "change", "change": { "id": "name", "kind": "request", "label": "field renamed", "before": "name", "after": "customer_name", "where": "POST body", "nodeIds": ["..."] } }
-{ "t": "stage", "stage": "trace" }
-{ "t": "hit", "hit": { "nodeId": "createOrder()", "from": "provider:orders-api", "hop": 1, "role": "symbol" } }   // role: change | symbol | dependent | test
-{ "t": "stage", "stage": "docs" }
-{ "t": "docs", "title": "...", "url": "..." }
-{ "t": "excerpt", "excerpt": { "id": "d1", "section": "...", "text": "...", "changeIds": ["name"], "nodeIds": ["..."] } }
-{ "t": "stage", "stage": "patch" }
-{ "t": "patch.start", "nodeId": "lib/orders-client.ts" }
-{ "t": "patch.done", "patch": { "nodeId": "...", "path": "...", "additions": 9, "deletions": 3, "hunks": [{ "header": "@@ ...", "lines": [{ "t": "+", "s": "..." }] }] } }
-{ "t": "stage", "stage": "verify" }
-{ "t": "check", "check": { "id": "t1", "group": "tests", "name": "...", "phase": "baseline", "status": "failed", "detail": "...", "nodeId": "tests/..." } }
-{ "t": "check", "check": { "id": "t1", "group": "tests", "name": "...", "phase": "patched", "status": "passed" } }   // group: tests | types | build
-{ "t": "stage", "stage": "pr" }
-{ "t": "pr", "pr": { "number": 12, "title": "...", "branch": "...", "base": "main", "url": "https://github.com/...", "files": 4, "additions": 21, "deletions": 8 } }
-{ "t": "done" }
+```bash
+cd backend && uv run pytest          # 30 tests; the end-to-end ones need the demo provider on :4010
+CHOWKIDAAR_TEST_PG=postgresql://user@localhost:5432/test uv run pytest   # same suite on Postgres
 ```
 
-Things the adapter does that are easy to trip over:
+The test session strips real credentials before anything runs: tests never reach your database, your
+LLM key or your GitHub account.
 
-- `graph.repo` and `graph.repo_nodes_total` from the payload name the repo and label the graph as a pipeline slice of N nodes.
-- Events are stamped on arrival but never closer together than a minimum pace (`paceAfter` in `src/lib/store.ts`), so a graph walk that arrives as one burst still plays out hop by hop.
-- A second `stage: detect` starts a fresh run, and the graph is refetched first, because the demo script reconnects the repo. While the graph is empty the page keeps polling for one.
-- A run that sends `done` without `pr` shows its last `msg` as the reason, marks the stage it stopped in on the rail, and the integration reads "needs review". A `patch.done` with no hunks does not turn anything green.
+## Status and limits
 
-`nodeId`, `from` and `nodeIds` must be ids from `/api/graph`; every `hit` needs a link between `from` and `nodeId` (either direction) for its edge label. Any event may carry `msg`, which becomes a line in the activity feed. Dependents turn green once a `build` check passes in the `patched` phase.
+Built at a hackathon. What has been exercised for real: connecting a production-style repository
+(Cloudflare Workers + Next.js, four providers), the pipeline graph and AI explanations, environment
+sensing, the pressure review, and pull requests opened on GitHub with the project's typecheck and
+build passing. What has only run against a stubbed GitHub in tests: acting on review comments and
+verifying a merge. Traffic in the pressure demo was simulated along the repository's real call graph;
+the predicted gains are model output until re-measured on live traffic. The storage layer assumes one
+backend process per database. Contract probes are GET-only and exist for a few providers; others are
+watched through environment changes and release webhooks.
 
-`change.label` is the backend's name for what happened ("field renamed", "renamed + meaning changed", "provider switched");
-without it the UI falls back to a label per `kind`. Two more message types share the stream and are not part of a run's log:
+## Credits
 
-```jsonc
-{ "t": "confirm.request", "request": { "id": "env_ab12", "kind": "provider-switched", "title": "Switch from Anthropic to OpenAI?", "body": "...",
-    "fromProviderId": "provider:anthropic", "toProviderId": "provider:openai", "needsProviderChoice": false } }
-{ "t": "confirm.resolved", "id": "env_ab12", "decision": "confirmed" }
-```
+The schema inference, hashing and diff in `backend/app/schema/` are a Python port of
+[`@schema-watch/core`](https://github.com/HenryMorganDibie/schema-watch) (Apache-2.0); the
+rename-candidate heuristic is inspired by
+[api-schema-differentiator](https://github.com/77QAlab/api-schema-differentiator) (MIT). The code graph
+is built with [Graphify](https://github.com/Graphify-Labs/graphify) (Apache-2.0) and call sites are
+found with [ast-grep](https://github.com/ast-grep/ast-grep) (MIT). See `backend/NOTICE`.

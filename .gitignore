@@ -1,3 +1,16 @@
-node_modules
-dist
-*.local
+# secrets and local state: never commit
+.env
+.env.*
+!.env.example
+*.key
+.data/
+
+# dependencies and build output
+node_modules/
+.venv/
+dist/
+__pycache__/
+.pytest_cache/
+*.tsbuildinfo
+graphify-out/
+.DS_Store

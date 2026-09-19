@@ -1,0 +1,26 @@
+[project]
+name = "chowkidaar-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.7.0",
+    "ast-grep-py>=0.45.3",
+    "fastapi>=0.141.1",
+    "graphifyy>=0.9.64",
+    "httpx>=0.28.1",
+    "openai>=3.16.2",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.15.0",
+    "uvicorn[standard]>=0.53.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
