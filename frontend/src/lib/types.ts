@@ -266,7 +266,13 @@ export interface Review {
 export interface SimReport {
   headline: string;
   source: "simulated";
-  metrics: { node: string; label: string; rps: number; p95_ms: number; load: number; errors: number; budget: number; calm_load: number }[];
+  /** 0-100 for the whole pipeline: half its weakest node, half the call-weighted mean. Arithmetic on the measurements. */
+  score?: number;
+  grade?: "healthy" | "watch" | "at risk";
+  /** Mean distance between the load predicted before the ramp and the load then measured. */
+  predictionError?: number | null;
+  metrics: { node: string; label: string; rps: number; p95_ms: number; load: number; errors: number; budget: number; calm_load: number;
+             calm_p95_ms?: number; calls?: number; score?: number; predicted?: { load: number; p95_ms: number; saturated: boolean } }[];
   good: { text: string; nodeIds: string[] }[];
   bad: { text: string; nodeIds: string[]; severity: "pressure" | "watch" | "errors" }[];
   goodText: string[];
@@ -276,7 +282,9 @@ export interface SimReport {
   writtenBy: string;
 }
 
-export interface SimStep { phase: "steady" | "ramp" | "measure" | "report"; msg: string }
+export interface SimStep { phase: "steady" | "predict" | "ramp" | "measure" | "report"; msg: string }
+/** What the queueing model expects at a call site once the load is raised. Sent before it is raised. */
+export interface SimPrediction { node: string; label: string; rps: number; load: number; p95_ms: number; capacity_rps: number; saturated: boolean }
 
 export interface Recommendation {
   id: string;
@@ -306,7 +314,7 @@ export type ControlEvent =
   | { t: "notify"; repoId?: string; notification: Notice }
   | { t: "traffic"; repoId: string; traffic: TrafficSnapshot }
   | { t: "recommend"; repoId: string; recommendation: Recommendation }
-  | ({ t: "sim"; repoId: string; report?: SimReport } & SimStep)
+  | ({ t: "sim"; repoId: string; report?: SimReport; predictions?: SimPrediction[] } & SimStep)
   | ({ t: "map"; repoId: string } & MapStep);
 
 export interface PipelineRun {

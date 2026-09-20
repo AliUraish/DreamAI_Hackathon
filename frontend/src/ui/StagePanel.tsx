@@ -246,8 +246,11 @@ function Armed() {
   );
 }
 
-/** One button: the agent simulates normal then peak load on this project's real call graph, measures every node,
- *  says what is healthy and what is weak, and recommends a change. It opens nothing until the user applies it. */
+const scoreTone = (v: number) => (v >= 85 ? "mint" : v >= 60 ? "amber" : "coral");
+
+/** One control: play. The agent runs normal load, predicts every call site at peak with the queueing model, raises the
+ *  load, measures, and scores every node below. Scores are arithmetic on those numbers. Nothing is opened until the
+ *  user applies the recommendation. */
 function Simulation() {
   const projectId = useStore((s) => s.projectId)!;
   const sim = useStore((s) => s.sim);
@@ -256,21 +259,70 @@ function Simulation() {
   const report = sim.report;
   const rec = report?.recommendation;
   const worst = rec ? Math.max(rec.before!.p95_ms, rec.after!.p95_ms) : 1;
+  const running = sim.running || busy === "sim";
+  const step = sim.steps[sim.steps.length - 1];
   return (
     <section className="group demo">
       <h3>Simulation{report && <i>{report.writtenBy === "simulation" ? "model" : `model + ${report.writtenBy}`}</i>}</h3>
-      <button className="cta cta-mint" disabled={sim.running || !!busy} onClick={() => run("sim", () => api.runSimulation(projectId))}>
-        <span>{report ? "Run the simulation again" : "Run a simulation"}<small>Normal load, then peak. The agent measures every node and tells you what holds and what does not.</small></span>
-        {sim.running || busy === "sim" ? <Spinner /> : <Icon.play />}
-      </button>
-      {sim.running && (
+      <div className="simplay">
+        <button className="play" aria-label="Play the simulation" title="Play the simulation" disabled={running || !!busy} onClick={() => run("sim", () => api.runSimulation(projectId))}>
+          {running ? <Spinner /> : <Icon.play />}
+        </button>
+        {running ? (
+          <span className="simplay-text"><b>{step ? STEP_TITLE[step.phase] : "Starting"}</b><small>{step?.msg ?? "Calls start to flow along this project's real call graph"}</small></span>
+        ) : report?.score !== undefined ? (
+          <span className="simplay-text">
+            <b className={`simscore ${scoreTone(report.score)}`}>{report.score}<i>/100</i> <em>{report.grade}</em></b>
+            <small>pipeline score at peak · half the weakest node, half where the calls go</small>
+          </span>
+        ) : null}
+      </div>
+
+      {running && sim.predictions.length > 0 && (
+        <table className="metrics mono rise">
+          <thead><tr><th>agent predicts at peak</th><th>calls/s</th><th>p95</th><th>load</th></tr></thead>
+          <tbody>
+            {sim.predictions.map((m) => (
+              <tr key={m.node} {...focusProps([m.node])}>
+                <td>{m.label}</td><td>{m.rps.toFixed(1)}</td><td>{m.saturated ? "times out" : seconds(m.p95_ms)}</td>
+                <td className={m.load >= 0.85 ? "coral" : m.load >= 0.6 ? "amber" : "mint"}>{m.load.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {running && sim.steps.length > 0 && (
         <ol className="mapping">
           {sim.steps.map((st, i) => <li key={i} className="rise">{i === sim.steps.length - 1 ? <Spinner /> : <span className="mint"><Icon.check /></span>}<span>{st.msg}</span></li>)}
         </ol>
       )}
-      {report && !sim.running && (
+
+      {report && !running && (
         <div className="simreport rise">
           <p className="explain-text">{report.headline}</p>
+          <div className="scroll-y">
+            <table className="metrics mono">
+              <thead><tr><th>node at peak</th><th>predicted</th><th>load</th><th>p95</th><th>fails</th><th>score</th></tr></thead>
+              <tbody>
+                {report.metrics.map((m) => (
+                  <tr key={m.node} {...focusProps([m.node])} onClick={() => flyTo([m.node], 1.7)}>
+                    <td>{m.label}</td>
+                    <td className="faint">{m.predicted ? m.predicted.load.toFixed(2) : "·"}</td>
+                    <td className={m.load >= 0.85 ? "coral" : m.load >= 0.6 ? "amber" : "mint"}>{m.load.toFixed(2)}</td>
+                    <td>{seconds(m.p95_ms)}</td>
+                    <td className={m.errors >= 0.02 ? "coral" : undefined}>{(m.errors * 100).toFixed(0)}%</td>
+                    <td>{m.score === undefined ? "·" : <span className={`scorebar ${scoreTone(m.score)}`} style={{ "--v": `${m.score}%` } as React.CSSProperties}>{m.score}</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {report.score !== undefined && (
+            <p className="note">
+              Score: 100, minus up to 60 as load passes half the budget, up to 30 for failed calls, up to 10 for slowdown against normal load. Computed, not the model's opinion.
+              {report.predictionError != null && <> The prediction made before the ramp was off by <b className="mono">{report.predictionError.toFixed(2)}</b> load on average.</>}
+            </p>
+          )}
           <div className="verdicts">
             <div>
               <span className="eyebrow mint">holds up</span>
@@ -281,17 +333,6 @@ function Simulation() {
               <ul>{report.badText.length ? report.badText.map((t, i) => <li key={i} {...focusProps(report.bad[i]?.nodeIds ?? [])} onClick={() => report.bad[i] && flyTo(report.bad[i].nodeIds, 1.7)}>{t}</li>) : <li>Nothing at this load.</li>}</ul>
             </div>
           </div>
-          <table className="metrics mono">
-            <thead><tr><th>node at peak</th><th>calls/s</th><th>p95</th><th>load</th></tr></thead>
-            <tbody>
-              {report.metrics.slice(0, 6).map((m) => (
-                <tr key={m.node} {...focusProps([m.node])}>
-                  <td>{m.label}</td><td>{m.rps.toFixed(1)}</td><td>{seconds(m.p95_ms)}</td>
-                  <td className={m.load >= 0.85 ? "coral" : m.load >= 0.6 ? "amber" : "mint"}>{m.load.toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
           {rec && (
             <div className="card option is-best" {...focusProps([rec.nodeId, ...rec.new_nodes.map((n) => n.from)])}>
               <span className="eyebrow mint">recommendation</span>
@@ -315,6 +356,8 @@ function Simulation() {
     </section>
   );
 }
+
+const STEP_TITLE: Record<string, string> = { steady: "Normal load", predict: "Predicting", ramp: "Raising the load", measure: "Measuring", report: "Scoring" };
 
 /** Traffic for this project: reported by the project itself, or simulated along its real call graph. */
 function TrafficControls() {

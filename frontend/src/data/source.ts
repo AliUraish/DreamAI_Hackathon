@@ -119,7 +119,7 @@ function openStream(): void {
         case "notify": return store.pushNotice(event.notification);
         case "traffic": return store.setTraffic(event.repoId, event.traffic);
         case "recommend": return store.addRecommendation(event.repoId, event.recommendation);
-        case "sim": return store.pushSim(event.repoId, { phase: event.phase, msg: event.msg }, event.report);
+        case "sim": return store.pushSim(event.repoId, { phase: event.phase, msg: event.msg }, event.report, event.predictions);
         case "map":
           store.pushMapStep(event.repoId, { phase: event.phase, msg: event.msg });
           // Context arrives in steps; the picture is drawn when the pipelines are traced.

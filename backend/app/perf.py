@@ -154,6 +154,20 @@ def alternative_providers(repo_id: str, provider_id: str) -> list[dict[str, Any]
 # --- the run ---------------------------------------------------------------------------------------
 
 
+def continuous_path(walk: list[dict[str, Any]], wanted: set[str]) -> list[dict[str, Any]]:
+    """The part of the walk from the provider that is shown for a review: the node, its callers, the files to change and the
+    tests, and every node on the way to them. A hit is drawn as a line from the node it was reached from, so leaving out the
+    nodes in between would draw a path with holes in it."""
+    by_id = {h["nodeId"]: h for h in walk}
+    keep = {h["nodeId"] for h in walk if h["nodeId"] in wanted or h["role"] in {"change", "test"}}
+    for node_id in list(keep):
+        parent = by_id[node_id]["from"]
+        while parent in by_id and parent not in keep:
+            keep.add(parent)
+            parent = by_id[parent]["from"]
+    return [h for h in walk if h["nodeId"] in keep]
+
+
 def open_review(repo: dict[str, Any], node: str, *, trigger: str = "audit", prefer: str | None = None) -> str | None:
     """Create the run for a node under pressure and hand it to the repository's agent. One open run per node."""
     from . import service
@@ -239,7 +253,7 @@ def _run(migration: dict[str, Any]) -> None:
 
     # 3. what depends on it
     ui("stage", f"Tracing what depends on {label}", stage="trace")
-    hits = [h for h in trace_hits(graph, usage) if h["nodeId"] == node or any(c["node"] == h["nodeId"] for c in callers) or h["role"] in {"change", "test"}]
+    hits = continuous_path(trace_hits(graph, usage), {node, *[c["node"] for c in callers]})
     for index, hit in enumerate(hits):
         ui("hit", f"{len(callers)} caller(s) share this call site" if index == len(hits) - 1 else None, hit=hit)
 

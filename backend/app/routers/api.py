@@ -494,7 +494,11 @@ def simulate_traffic(repo_id: str, body: Simulate):
     sim = traffic.start_simulation(repo_id, graph, usages, {p["id"]: p for p in all_providers()}, body.profile, body.target)
     if body.profile == "pressure" and not sim.target:
         rate = sim.rates()
-        sites = [n for n in sim.budgets if len([c for c, t in sim.calls.items() if n in t]) >= 2] or list(sim.budgets)
+        # A call site whose relief is already waiting in a pull request is not put under pressure again: the next one is.
+        reviewed = {(m.get("meta") or {}).get("node") for m in db.select("migrations", {"repo_id": repo_id})
+                    if m.get("kind") == "performance" and m["status"] in {"queued", "running", "pr_opened", "ready_local"}}
+        fresh = [n for n in sim.budgets if n not in reviewed]
+        sites = [n for n in fresh if len([c for c, t in sim.calls.items() if n in t]) >= 2] or fresh or list(sim.budgets)
         sim.target = max(sites, key=lambda n: rate.get(n, 0.0) * sim.slot_ms(None, n)) if sites else None
     return {"profile": sim.profile, "target": sim.target, "entries": len(sim.entries)}
 

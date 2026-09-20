@@ -3,7 +3,11 @@
 A simulation is a what-if. It never opens a pull request by itself and the periodic audit does not act on it; the
 recommendation it ends with can be applied by the user, and only then does the pressure review (perf.py) run.
 
-Phases, each announced on the stream as {"t": "sim", phase, msg}:  steady -> ramp -> measure -> report
+Phases, each announced on the stream as {"t": "sim", phase, msg}:  steady -> predict -> ramp -> measure -> report
+
+Before the load is raised the agent predicts every call site at peak with the queueing model. The simulation then
+measures it, so the report can say how close the prediction was. Scores are arithmetic on those numbers (see `score`),
+never the language model's opinion.
 """
 
 from __future__ import annotations
@@ -29,6 +33,37 @@ class Assessment(BaseModel):
     good: list[str] = Field(description="2-4 short findings that are healthy, each naming a real node or provider and a number given to you.")
     bad: list[str] = Field(description="1-4 short findings that are weak, each naming a real node or provider and a number given to you.")
     recommendation: str = Field(description="Two sentences: what to change first and why, quoting the simulated before/after numbers of the option you were given.")
+
+
+def score(load: float, errors: float, p95_ms: float, calm_p95_ms: float) -> int:
+    """0-100 for one node at peak. Up to 60 points go as load climbs from half its budget to all of it, up to 30 as failures
+    climb to 10% of calls, up to 10 as p95 grows from 1.5x to 5.5x what it is under normal load."""
+    clamp = lambda x: max(0.0, min(1.0, x))  # noqa: E731
+    slowdown = p95_ms / calm_p95_ms if calm_p95_ms else 1.0
+    return round(100 - 60 * clamp((load - 0.5) / 0.5) - 30 * clamp(errors / 0.10) - 10 * clamp((slowdown - 1.5) / 4))
+
+
+def grade(value: int) -> str:
+    return "healthy" if value >= 85 else "watch" if value >= 60 else "at risk"
+
+
+def predict(sim: traffic.Simulator, target: str | None, label: Any) -> list[dict[str, Any]]:
+    """What the queueing model expects at every call site once the load is raised on `target`. Computed before it is raised."""
+    was = sim.profile, sim.target
+    sim.profile, sim.target = ("pressure", target) if target else was
+    try:
+        rate = sim.rates()
+    finally:
+        sim.profile, sim.target = was
+    out = []
+    for node, budget in sim.budgets.items():
+        callers = [c for c, targets in sim.calls.items() if node in targets]
+        weight = sum(rate[c] for c in callers)
+        slot = sum(rate[c] * sim.slot_ms(c, node) for c in callers) / weight if weight else sim.slot_ms(None, node)
+        expected = traffic.response(weight, slot, budget)
+        out.append({"node": node, "label": label(node), "rps": round(weight, 2), "load": expected["load"], "p95_ms": expected["p95_ms"],
+                    "capacity_rps": expected["capacity_rps"], "saturated": expected["saturated"]})
+    return sorted(out, key=lambda row: -row["load"])
 
 
 def _say(repo_id: str, phase: str, msg: str, **extra: Any) -> None:
@@ -60,6 +95,9 @@ def _run(repo: dict[str, Any], steady_seconds: float, pressure_seconds: float) -
         rate = sim.rates()
         shared = [n for n in sim.budgets if len([c for c, t in sim.calls.items() if n in t]) >= 2] or list(sim.budgets)
         target = max(shared, key=lambda n: sim.offered(n, rate)) if shared else None
+        predictions = predict(sim, target, label)
+        _say(repo["id"], "predict", f"Predicting {len(predictions)} call site(s) at peak with the queueing model, before raising the load", predictions=predictions)
+        time.sleep(min(3.0, steady_seconds / 2))
         if target:
             sim.profile, sim.target = "pressure", target
             _say(repo["id"], "ramp", f"Raising load until {label(target)} runs at its budget", target=target)
@@ -67,7 +105,7 @@ def _run(repo: dict[str, Any], steady_seconds: float, pressure_seconds: float) -
         _say(repo["id"], "measure", "Measuring every node: calls per second, p95, load, errors")
         hot = traffic.snapshot(repo["id"], window=max(8, int(pressure_seconds) - 2))
 
-        report = build_report(repo, graph, usages, sim, calm, hot, target, label)
+        report = build_report(repo, graph, usages, sim, calm, hot, target, label, predictions)
         db.insert("audits", {"id": db.new_id("aud"), "repo_id": repo["id"], "verdict": "simulation", "source": "simulated", "window_seconds": hot["window"],
                              "summary": report["headline"], "findings": report["bad"], "metrics": report, "action": None, "created_at": db.now()})
         agents.remember(repo["id"], "outcome", f"Simulation: {report['headline']} Recommended: {report['recommendation']['title'] if report['recommendation'] else 'nothing'}.")
@@ -79,10 +117,21 @@ def _run(repo: dict[str, Any], steady_seconds: float, pressure_seconds: float) -
         _running.discard(repo["id"])
 
 
-def build_report(repo, graph, usages, sim, calm, hot, target, label) -> dict[str, Any]:
+def build_report(repo, graph, usages, sim, calm, hot, target, label, predictions=()) -> dict[str, Any]:
     nodes = {n: m for n, m in hot["nodes"].items() if not n.startswith("provider:")}
     metrics = [{"node": n, "label": label(n), "rps": m["rps"], "p95_ms": m["p95_ms"], "load": m["load"], "errors": m["errors"], "budget": m["budget"],
-                "calm_load": calm["nodes"].get(n, {}).get("load", 0.0)} for n, m in sorted(nodes.items(), key=lambda item: -item[1]["load"])]
+                "calm_load": calm["nodes"].get(n, {}).get("load", 0.0), "calm_p95_ms": calm["nodes"].get(n, {}).get("p95_ms", 0.0), "calls": m["calls"]}
+               for n, m in sorted(nodes.items(), key=lambda item: -item[1]["load"])]
+    expected = {row["node"]: row for row in predictions}
+    for m in metrics:
+        m["score"] = score(m["load"], m["errors"], m["p95_ms"], m["calm_p95_ms"])
+        if m["node"] in expected:
+            m["predicted"] = {k: expected[m["node"]][k] for k in ("load", "p95_ms", "saturated")}
+    # A pipeline is judged half by its weakest node and half by where its calls actually go.
+    calls = sum(m["calls"] for m in metrics) or 1
+    overall = round(0.5 * min(m["score"] for m in metrics) + 0.5 * sum(m["score"] * m["calls"] for m in metrics) / calls) if metrics else 100
+    compared = [m for m in metrics if "predicted" in m and m["calls"] >= 10]
+    off = round(sum(abs(m["predicted"]["load"] - m["load"]) for m in compared) / len(compared), 3) if compared else None
     good: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
 
@@ -142,7 +191,8 @@ def build_report(repo, graph, usages, sim, calm, hot, target, label) -> dict[str
                                        "never invent a number. Short, concrete, no hype.", facts, Assessment, effort="low")
         except llm.LLMUnavailable:
             narrative = None
-    return {"headline": narrative.headline if narrative else headline, "source": "simulated", "metrics": metrics[:16],
+    return {"headline": narrative.headline if narrative else headline, "source": "simulated", "metrics": metrics[:40],
+            "score": overall, "grade": grade(overall), "predictionError": off,
             "good": [g for g in good][:5], "bad": bad[:6],
             "goodText": narrative.good if narrative else [g["text"] for g in good][:4], "badText": narrative.bad if narrative else [b["text"] for b in bad][:4],
             "advice": narrative.recommendation if narrative else (f"{recommendation['title']}. {recommendation['summary']}" if recommendation else "Nothing needs changing at this load."),

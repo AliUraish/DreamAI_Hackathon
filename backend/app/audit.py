@@ -18,6 +18,27 @@ WATCH_LOAD = 0.6
 ERROR_RATE = 0.05
 
 
+def root_causes(snap: dict[str, Any], pressure: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Causes before symptoms: a function that is slow because something it calls, however far down, is past its budget is
+    not the one to change."""
+    pressured = {f["node"] for f in pressure}
+    calls: dict[str, set[str]] = {}
+    for key in snap.get("links", {}):
+        a, b = key.split("->", 1)
+        calls.setdefault(a, set()).add(b)
+
+    def downstream(node: str) -> set[str]:
+        seen, stack = set(), list(calls.get(node, ()))
+        while stack:
+            n = stack.pop()
+            if n not in seen:
+                seen.add(n)
+                stack.extend(calls.get(n, ()))
+        return seen - {node}
+
+    return [f for f in pressure if not downstream(f["node"]) & pressured] or pressure
+
+
 def run_audit(repo: dict[str, Any], *, window: int = 300, act: bool = True) -> dict[str, Any]:
     from . import service
     snap = traffic.snapshot(repo["id"], window=window)
@@ -53,9 +74,16 @@ def run_audit(repo: dict[str, Any], *, window: int = 300, act: bool = True) -> d
     if simrun.exploring(repo["id"]):
         audit["action"] = "none: a what-if simulation is driving the traffic"
     elif act and verdict == "pressure":
-        hot = max((f for f in findings if f["kind"] == "pressure"), key=lambda f: snap["nodes"][f["node"]]["load"])
-        run_id = perf.open_review(repo, hot["node"], trigger="audit")
-        audit["action"] = f"started review {run_id} for {hot['label']}" if run_id else f"a review for {hot['label']} is already open"
+        causes = root_causes(snap, [f for f in findings if f["kind"] == "pressure"])
+        waiting = []
+        for hot in sorted(causes, key=lambda f: -snap["nodes"][f["node"]]["load"]):
+            run_id = perf.open_review(repo, hot["node"], trigger="audit")
+            if run_id:
+                audit["action"] = f"started review {run_id} for {hot['label']}" + (f" (already open: {', '.join(waiting)})" if waiting else "")
+                break
+            waiting.append(hot["label"])
+        else:
+            audit["action"] = f"a review for {', '.join(waiting)} is already open"
 
     db.insert("audits", audit)
     log = settings.data_dir / "audit" / f"{repo['id']}.jsonl"

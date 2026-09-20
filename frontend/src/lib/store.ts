@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { DemoState, MigrationCard, Repo, SystemInfo, Workspace } from "../data/api";
 import { countApplied, deriveView, type View } from "./derive";
-import type { Agent, BaseStatus, ConfirmRequest, GraphData, MapStep, Notice, PipelineEvent, PipelineRun, Recommendation, SimReport, SimStep, TrafficSnapshot, WireEvent } from "./types";
+import type { Agent, BaseStatus, ConfirmRequest, GraphData, MapStep, Notice, PipelineEvent, PipelineRun, Recommendation, SimReport, SimPrediction, SimStep, TrafficSnapshot, WireEvent } from "./types";
 
 export type CameraCmd =
   | { type: "fit"; nonce: number }
@@ -37,7 +37,7 @@ interface State {
   /** Better routes the agent found (after a provider key was added); the user decides whether to apply them. */
   recommendations: Recommendation[];
   /** The one-button simulation for the project on screen: its phases while it runs, then its report. */
-  sim: { steps: SimStep[]; running: boolean; report: SimReport | null };
+  sim: { steps: SimStep[]; running: boolean; report: SimReport | null; predictions: SimPrediction[] };
   /** Steps of the agent building context for the project on screen; the graph grows when they finish. */
   mapping: MapStep[];
   addingProject: boolean;
@@ -91,7 +91,7 @@ interface State {
   upsertAgent(agent: Agent): void;
   addPending(request: ConfirmRequest): void;
   resolvePending(id: string): void;
-  pushSim(repoId: string, step: SimStep, report?: SimReport): void;
+  pushSim(repoId: string, step: SimStep, report?: SimReport, predictions?: SimPrediction[]): void;
   setSimReport(report: SimReport | null, running: boolean): void;
   setTraffic(repoId: string, traffic: TrafficSnapshot | null): void;
   addRecommendation(repoId: string, r: Recommendation): void;
@@ -130,7 +130,7 @@ export const useStore = create<State>((set, get) => ({
   lastRun: null,
   traffic: null,
   recommendations: [],
-  sim: { steps: [], running: false, report: null },
+  sim: { steps: [], running: false, report: null, predictions: [] },
   mapping: [],
   addingProject: false,
 
@@ -226,13 +226,14 @@ export const useStore = create<State>((set, get) => ({
   upsertAgent: (agent) => set({ agents: [...get().agents.filter((a) => a.repoId !== agent.repoId), agent] }),
   addPending: (request) => set({ pending: [...get().pending.filter((p) => p.id !== request.id), request] }),
   resolvePending: (id) => set({ pending: get().pending.filter((p) => p.id !== id) }),
-  pushSim(repoId, step, report) {
+  pushSim(repoId, step, report, predictions) {
     if (repoId !== get().projectId) return;
     const prev = get().sim;
     const steps = step.phase === "steady" ? [step] : [...prev.steps, step];
-    set({ sim: { steps, running: step.phase !== "report", report: report ?? (step.phase === "steady" ? null : prev.report) } });
+    set({ sim: { steps, running: step.phase !== "report", report: report ?? (step.phase === "steady" ? null : prev.report),
+                 predictions: predictions ?? (step.phase === "steady" ? [] : prev.predictions) } });
   },
-  setSimReport: (report, running) => set({ sim: { steps: get().sim.steps, running: running || get().sim.running, report: get().sim.report ?? report } }),
+  setSimReport: (report, running) => set({ sim: { ...get().sim, running: running || get().sim.running, report: get().sim.report ?? report } }),
   setTraffic(repoId, traffic) {
     if (repoId === get().projectId) set({ traffic: traffic && traffic.source !== "none" ? traffic : null });
   },
@@ -258,7 +259,7 @@ export const useStore = create<State>((set, get) => ({
     const duration = durationOf(run);
     // A run that went on while another project was on screen is shown where it stands now.
     const clock = run.events.length ? duration : -1;
-    set({ projectId, graph: EMPTY_GRAPH, nodeStatus: new Map(), mapping: [], lastRun: null, traffic: null, recommendations: [], sim: { steps: [], running: false, report: null }, run, duration, clock, playing: run.events.length > 0,
+    set({ projectId, graph: EMPTY_GRAPH, nodeStatus: new Map(), mapping: [], lastRun: null, traffic: null, recommendations: [], sim: { steps: [], running: false, report: null, predictions: [] }, run, duration, clock, playing: run.events.length > 0,
           view: deriveView(run, clock), selectedId: null, selectedLink: null, hoverId: null, focusIds: null, panelTab: "pipeline", follow: true,
           hiddenCommunities: new Set() });
     const url = new URL(location.href);
