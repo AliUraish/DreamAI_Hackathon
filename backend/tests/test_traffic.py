@@ -193,6 +193,9 @@ def test_pressure_moves_on_from_a_call_site_whose_relief_is_already_in_a_pull_re
     traffic.simulator(repo["id"]).warm(60)
     judged = audit.run_audit(repo, window=40)
     assert judged["verdict"] == "pressure" and "embed()" in judged["action"] and judged["action"].startswith("started review")
+    again = audit.run_audit(repo, window=40)                                                  # five minutes later, still under pressure
+    assert again["verdict"] == "pressure" and again["action"].startswith("none: a review this audit started")
+    assert len([m for m in db.select("migrations") if m["trigger"] == "audit"]) == 1          # one pull request at a time, not one per audit
 
 
 def test_the_audit_reviews_causes_not_the_functions_waiting_on_them():

@@ -99,7 +99,13 @@ export interface Scene {
   proposed: { from: string; to: string }[];
   /** Proposed nodes that should be on screen right now (they are created once and hidden when no longer proposed). */
   proposedIds: Set<string>;
+  /** The one-button simulation is playing: traffic dots move fast. Otherwise they move slowly, all at one speed. */
+  fast?: boolean;
 }
+
+/** Graph units per millisecond for a traffic dot, and how much faster time runs while a simulation plays. */
+const FLOW_SPEED = 0.03, FLOW_FAST = 4;
+let flowClock = 0, flowSeen = 0;
 
 const GROW_MS = 720;
 /** 0 before a node is born, easing to 1 as it arrives. */
@@ -261,12 +267,16 @@ export function draw(s: Scene) {
 
   // --- traffic: dots move caller -> callee, more of them the busier the link, slower the longer a call takes ----------
   const traffic = s.traffic;
-  const flow = (a: SimNode, b: SimNode, rps: number, meanMs: number, color: string, seed: number, dim = 1) => {
+  // Every dot moves at the same slow speed, whatever the link; how busy a link is shows in how many dots it carries.
+  // While the one-button simulation plays, time runs faster for all of them. A running clock, so a change of pace never jumps.
+  flowClock += Math.min(100, Math.max(0, now - flowSeen)) * (s.fast ? FLOW_FAST : 1);
+  flowSeen = now;
+  const flow = (a: SimNode, b: SimNode, rps: number, _meanMs: number, color: string, seed: number, dim = 1) => {
     const count = Math.max(1, Math.min(9, Math.round(rps * 1.6)));
-    const period = Math.max(900, Math.min(5200, 700 + meanMs * 1.1)); // ms for one dot to cross the link
+    const period = Math.max(1200, Math.hypot(b.x - a.x, b.y - a.y) / FLOW_SPEED); // ms for one dot to cross the link
     const x1 = sx(a), y1 = sy(a), x2 = sx(b), y2 = sy(b);
     for (let i = 0; i < count; i++) {
-      const t = frac(now / period + seed + i / count);
+      const t = frac(flowClock / period + seed + i / count);
       ctx.fillStyle = rgba(color, 0.9 * Math.sin(t * Math.PI) * dim);
       ctx.beginPath();
       ctx.arc(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 1.2 + Math.min(1.6, rps * 0.18), 0, Math.PI * 2);

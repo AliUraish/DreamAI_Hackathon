@@ -107,9 +107,13 @@ export function deriveView(run: PipelineRun, clock: number): View {
         break;
       }
       case "check": {
-        const idx = v.checks.findIndex((c) => c.id === e.check.id && c.phase === e.check.phase);
-        if (idx >= 0) v.checks[idx] = { ...e.check, at: e.at };
-        else v.checks.push({ ...e.check, at: e.at });
+        // A first attempt that did not pass is not the result: the agent revises the change and runs the check again.
+        // Until that second run reports, the check is still in progress.
+        const again = e.check.status === "failed" && run.events.some((later, j) => j > i && later.t === "check" && later.check.id === e.check.id && later.check.phase === e.check.phase);
+        const check = again ? { ...e.check, status: "running" as const, detail: "revising the change, then running this again" } : e.check;
+        const idx = v.checks.findIndex((c) => c.id === check.id && c.phase === check.phase);
+        if (idx >= 0) v.checks[idx] = { ...check, at: e.at };
+        else v.checks.push({ ...check, at: e.at });
         break;
       }
       case "pr":

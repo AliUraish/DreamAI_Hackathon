@@ -330,7 +330,7 @@ export function GraphCanvas() {
           ctx, w, h, dpr, cam, now, clock: s.clock, layout, view: s.view, statuses,
           hoverId: s.hoverId, selectedId: s.selectedId,
           focus: s.focusIds ? new Set(s.focusIds) : null,
-          hidden: s.hiddenCommunities, base: s.nodeStatus, selectedLink: s.selectedLink, traffic: s.traffic, proposed, proposedIds,
+          hidden: s.hiddenCommunities, base: s.nodeStatus, selectedLink: s.selectedLink, traffic: s.traffic, proposed, proposedIds, fast: s.sim.running,
         });
       raf = requestAnimationFrame(frame);
     };

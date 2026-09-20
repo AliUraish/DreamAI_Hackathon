@@ -18,6 +18,18 @@ WATCH_LOAD = 0.6
 ERROR_RATE = 0.05
 
 
+def _recent_review(repo_id: str, minutes: int = 30) -> bool:
+    """The silent audit opens one pull request, then gives people time to look at it. Pressure on five call sites must not
+    become five pull requests in twenty-five minutes. A person can still start any review from the UI."""
+    from datetime import datetime, timedelta, timezone
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    for m in db.select("migrations", {"repo_id": repo_id}):
+        if m.get("kind") == "performance" and m.get("trigger") == "audit":
+            if m["status"] in {"queued", "running"} or datetime.fromisoformat(m["created_at"]) >= since:
+                return True
+    return False
+
+
 def root_causes(snap: dict[str, Any], pressure: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Causes before symptoms: a function that is slow because something it calls, however far down, is past its budget is
     not the one to change."""
@@ -73,6 +85,8 @@ def run_audit(repo: dict[str, Any], *, window: int = 300, act: bool = True) -> d
     from . import simrun
     if simrun.exploring(repo["id"]):
         audit["action"] = "none: a what-if simulation is driving the traffic"
+    elif act and verdict == "pressure" and _recent_review(repo["id"]):
+        audit["action"] = "none: a review this audit started is less than 30 minutes old; one pull request at a time"
     elif act and verdict == "pressure":
         causes = root_causes(snap, [f for f in findings if f["kind"] == "pressure"])
         waiting = []

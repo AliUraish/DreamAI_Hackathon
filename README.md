@@ -129,9 +129,11 @@ The shape diff sees two renames. Only the migration guide says `amount` is integ
 A rename-only patch prints `$1999.00` instead of `$19.99`, fails the app's tests against the live API,
 and is never shipped.
 
-In the UI, the Monitoring panel has **Run a simulation**: normal load, then peak, along the project's
-real call graph. The agent measures every node, says what holds and what is weak, and recommends a
-change with simulated before/after numbers. While traffic flows, call sites past half their budget get
+In the UI, the Monitoring panel has one **Play** button for the simulation: normal load, a prediction of every
+call site at peak (queueing model), then the peak itself along the project's real call graph. Below it the agent
+shows predicted against measured load, p95, failures and a 0-100 score per node and for the pipeline (arithmetic on
+the measurements, never the model's opinion), what holds, what is weak, and a recommended change with simulated
+before/after numbers. While traffic flows, call sites past half their budget get
 a dashed "add a node here" proposal drawn on the graph. Nothing is changed until you press Apply.
 
 ## Traffic from a real service
@@ -166,7 +168,7 @@ demo/        provider/      mock Acme Orders API (v1 → v2)
 ## Tests
 
 ```bash
-cd backend && uv run pytest          # 32 tests; the end-to-end ones need the demo provider on :4010
+cd backend && uv run pytest          # 35 tests; the end-to-end ones need the demo provider on :4010
 CHOWKIDAAR_TEST_PG=postgresql://user@localhost:5432/test uv run pytest   # same suite on Postgres
 ```
 

@@ -319,8 +319,8 @@ function Simulation() {
           </div>
           {report.score !== undefined && (
             <p className="note">
-              Score: 100, minus up to 60 as load passes half the budget, up to 30 for failed calls, up to 10 for slowdown against normal load. Computed, not the model's opinion.
-              {report.predictionError != null && <> The prediction made before the ramp was off by <b className="mono">{report.predictionError.toFixed(2)}</b> load on average.</>}
+              Score = 100 − penalties for load, failed calls and slowdown. Computed from the measurements, not the model's opinion.
+              {report.predictionError != null && <> Prediction before the ramp: off by <b className="mono">{report.predictionError.toFixed(2)}</b> load on average.</>}
             </p>
           )}
           <div className="verdicts">
@@ -694,13 +694,22 @@ function Verify({ view }: { view: View }) {
       </span>
     );
   };
+  const final = other.filter((c) => c.phase === "patched");
+  const allOk = final.length > 0 && final.every((c) => c.status === "passed");
   return (
     <>
+      {ids.length === 0 ? (
+        <div className={`ended ${allOk ? "is-ok" : "is-plain"}`}>
+          <span className={`eyebrow ${allOk ? "mint" : "muted"}`}>{allOk ? "verification" : "verifying"}</span>
+          <p>{allOk ? <><Icon.check /> All {final.length} checks pass with the change</> : <><Spinner /> Running this project's own checks on the change</>}</p>
+        </div>
+      ) : (
       <div className="verify-head mono">
         <span />
         <span className={count("baseline", "failed") ? "coral" : "muted"}>{target}, unpatched<br /><b>{count("baseline", "failed")} failing</b></span>
         <span className={count("patched", "passed") ? "mint" : "muted"}>{target}, patched<br /><b>{count("patched", "passed")}/{ids.length || "–"} passing</b></span>
       </div>
+      )}
       <div className="verify">
         {ids.map((id) => {
           const any = tests.find((c) => c.id === id)!;
@@ -743,7 +752,7 @@ function Pr({ view }: { view: View }) {
   if (!pr) return <p className="note"><Spinner /> Pushing branch and opening the pull request</p>;
   const tests = view.checks.filter((c) => c.group === "tests" && c.phase === "patched");
   const passed = tests.filter((c) => c.status === "passed").length;
-  const others = view.checks.filter((c) => c.group !== "tests" && c.status === "passed");
+  const others = view.checks.filter((c) => c.group !== "tests" && c.status === "passed" && c.phase !== "baseline");
   return (
     <>
       <div className="pr rise">
@@ -752,7 +761,7 @@ function Pr({ view }: { view: View }) {
         <div className="pr-branch mono"><Icon.branch /> {pr.branch} <Icon.arrow /> {pr.base}</div>
         <ul className="pr-facts">
           <li><b className="mono">{pr.files}</b> files · <b className="add mono">+{pr.additions}</b> <b className="del mono">−{pr.deletions}</b></li>
-          <li className="mint"><Icon.check /> {passed}/{tests.length} tests passed</li>
+          {tests.length > 0 && <li className="mint"><Icon.check /> {passed}/{tests.length} tests passed</li>}
           {others.map((c) => <li key={c.id} className="mint"><Icon.check /> <span className="mono">{c.name}</span></li>)}
         </ul>
         <a className="cta cta-violet" href={pr.url} target="_blank" rel="noreferrer">
@@ -760,6 +769,7 @@ function Pr({ view }: { view: View }) {
           <Icon.external />
         </a>
       </div>
+      <RunReport view={view} />
       {view.merged && (
         <div className={`ended rise ${view.merged.verified ? "is-ok" : ""}`}>
           <span className={`eyebrow ${view.merged.verified ? "mint" : "amber"}`}>{view.merged.verified ? "merged and verified" : "merged · checks failing"}</span>
@@ -790,6 +800,58 @@ function Pr({ view }: { view: View }) {
         <PatchedFiles view={view} statuses={statuses} />
       </section>
     </>
+  );
+}
+
+/** Shown once the pull request is open: what was wrong, how it was fixed, what the result is. Everything in it was
+ *  already reported by the run itself (the diagnosis, the chosen option, the simulation, the checks, the diff). */
+function RunReport({ view }: { view: View }) {
+  const pr = view.pr;
+  if (!pr) return null;
+  const review = view.review;
+  const chosen = review?.options.find((o) => o.id === review.recommended) ?? review?.options[0];
+  const final = view.checks.filter((c) => c.phase === "patched");
+  const passed = final.filter((c) => c.status === "passed");
+  const files = [...view.patches.values()].filter((f) => f.status === "done");
+  return (
+    <section className="report rise">
+      <span className="eyebrow mint">run report</span>
+      <div className="report-row">
+        <b>What was wrong</b>
+        {review ? (
+          <>
+            <p>{review.diagnosis}</p>
+            <span className="chips">
+              <span className="chip mono">load {review.before.load.toFixed(2)} of {review.before.budget} slots</span>
+              <span className="chip mono">p95 {review.before.saturated ? "timing out" : seconds(review.before.p95_ms)}</span>
+              <span className="chip mono">{review.before.rps.toFixed(1)} calls/s</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <p>{view.release ? `The provider moved from ${view.release.from} to ${view.release.to}. ` : ""}{view.changes.length} change(s) in the API contract break this code:</p>
+            <ul className="report-list">{view.changes.slice(0, 5).map((c) => <li key={c.id}><span className="mono">{c.before}</span> → <span className="mono">{c.after}</span>{c.note ? ` · ${c.note}` : ""}</li>)}</ul>
+          </>
+        )}
+      </div>
+      <div className="report-row">
+        <b>How it was fixed</b>
+        {chosen ? <p><b className="mint">{chosen.title}.</b> {chosen.summary} {review!.why}</p> : <p>The agent read the provider's migration guide and rewrote only the files on the affected path.</p>}
+        <ul className="report-list mono">{files.map((f) => f.patch && <li key={f.patch.path}>{f.patch.path} <span className="add">+{f.patch.additions}</span> <span className="del">−{f.patch.deletions}</span></li>)}</ul>
+      </div>
+      <div className="report-row">
+        <b>Result</b>
+        {review && chosen && (
+          <span className="chips">
+            <span className="chip mono">p95 {review.before.saturated ? "timing out" : seconds(review.before.p95_ms)} → {seconds(chosen.after.p95_ms)}</span>
+            <span className="chip mono">capacity +{chosen.gain.capacity_pct}%</span>
+            <span className="chip mono">simulated</span>
+          </span>
+        )}
+        <p className="mint"><Icon.check /> {passed.length}/{final.length} of this project's checks pass with the change · pull request #{pr.number} is open for review</p>
+        {review && review.risks.length > 0 && <p className="muted small">Look at before merging: {review.risks.slice(0, 2).join(" ")}</p>}
+      </div>
+    </section>
   );
 }
 

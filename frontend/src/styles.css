@@ -396,6 +396,7 @@ kbd {
 .state.blue { color: var(--blue); } .state.muted { color: var(--faint); }
 .hex.blue { background: var(--blue); } .hex.muted { background: var(--faint); }
 .integration.is-static { cursor: default; opacity: 0.85; }
+.ended.is-plain { border-color: var(--line-2); background: transparent; }
 .ended.is-ok { border-color: color-mix(in srgb, var(--mint) 40%, transparent); background: color-mix(in srgb, var(--mint) 7%, transparent); }
 .field { display: grid; gap: 7px; }
 .field input, .field select {
@@ -561,6 +562,16 @@ kbd {
 .metrics td:first-child { color: var(--text); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .metrics tr:hover td { background: var(--raise); }
 
+/* The report at the end of a run */
+.report { display: grid; gap: 12px; padding: 14px 15px; border: 1px solid color-mix(in srgb, var(--mint) 35%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--mint) 5%, transparent); }
+.report-row { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.5; }
+.report-row > b { font: 500 10.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.report-row p { color: var(--muted); }
+.report-row p.mint { color: var(--mint); display: flex; gap: 7px; align-items: flex-start; }
+.report-row p.mint svg { flex: none; width: 13px; height: 13px; margin-top: 3px; }
+.report-list { display: grid; gap: 3px; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.report-list .add { color: var(--mint); } .report-list .del { color: var(--coral); }
+
 /* The simulation: one control, then predictions and scores */
 .simplay { display: flex; align-items: center; gap: 12px; min-height: 44px; }
 .play {
@@ -580,6 +591,8 @@ kbd {
 .simscore.mint, .scorebar.mint { color: var(--mint); } .simscore.amber, .scorebar.amber { color: var(--amber); } .simscore.coral, .scorebar.coral { color: var(--coral); }
 .scroll-y { max-height: 232px; overflow-y: auto; }
 .metrics tbody tr { cursor: default; }
+.metrics th + th, .metrics td + td { padding-left: 9px; }
+.metrics td:first-child { max-width: 118px; }
 .metrics td.faint { color: var(--faint); }
 .scorebar { position: relative; display: inline-block; min-width: 38px; padding: 0 4px; text-align: right; }
 .scorebar::before { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: var(--v); background: currentColor; opacity: 0.7; border-radius: 1px; }
