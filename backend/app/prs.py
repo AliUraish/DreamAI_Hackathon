@@ -24,6 +24,65 @@ def open_pull_requests() -> list[dict[str, Any]]:
     return [m for m in db.select("migrations") if m.get("pr_number") and m.get("pr_state") == "open"]
 
 
+def _review_target(graph: Any, branch: str) -> dict[str, Any]:
+    """The node and option a `chowkidaar/relieve-<label>[-<option>]` branch was for, so the same review is not opened twice."""
+    import re
+    slug = branch.removeprefix("chowkidaar/relieve-")
+    for node, data in graph.nodes(data=True):
+        label = re.sub(r"[^a-z0-9]+", "-", str(data.get("label", "")).lower()).strip("-")
+        if label and (slug == label or slug in {f"{label}-{option}" for option in ("split", "route", "limit")}):
+            return {"node": node, "label": data.get("label"), "prefer": slug[len(label) + 1:] or None}
+    return {}
+
+
+def adopt(repo: dict[str, Any]) -> list[str]:
+    """Pick up open pull requests Chowkidaar opened on this repository that it has no record of (a new database, a reconnected
+    project). Everything recorded comes from GitHub: the title, the description, the diff. They are then watched like any other."""
+    from . import ui_events
+    from .graph import affected_from_usage
+    if not repo.get("full_name") or not gitops.github_token():
+        return []
+    known = {m["pr_number"] for m in db.select("migrations", {"repo_id": repo["id"]}) if m.get("pr_number")}
+    found = [pr for pr in gitops.open_pull_requests_by_prefix(repo["full_name"], "chowkidaar/") if pr["number"] not in known]
+    if not found:
+        return []
+    from . import service
+    usages, graph = service.analysis(repo)
+    integrations = db.select("integrations", {"repo_id": repo["id"]})
+    file_node = {graph.nodes[n].get("source_file"): n for u in usages.values() for n in affected_from_usage(graph, u)
+                 if graph.nodes[n].get("source_location") == "L1" and not str(graph.nodes[n].get("label", "")).endswith("()")}
+    adopted = []
+    for pr in sorted(found, key=lambda p: p["number"]):
+        patches = ui_events.build_patches(pr["diff"], file_node)
+        paths = [p["path"] for p in patches]
+        usage = next((u for u in usages.values() if set(paths) & set(u.files)), None)
+        integration = next((i for i in integrations if usage and i["provider"] == usage.provider), None) or (integrations[0] if integrations else None)
+        if not integration:
+            continue
+        kind = "performance" if pr["branch"].startswith("chowkidaar/relieve-") else "migration"
+        migration = db.insert("migrations", {
+            "id": db.new_id("mig"), "repo_id": repo["id"], "integration_id": integration["id"], "title": pr["title"], "status": "pr_opened", "kind": kind,
+            "trigger": "adopted", "from_version": None, "to_version": None, "changes": [],
+            "affected_files": [{"path": path, "depth": 0, "role": "changed by the pull request", "read_only": False} for path in paths], "steps": [], "validation": {},
+            "patched_files": paths, "meta": {"adopted": True, "provider": integration["provider"], **(_review_target(graph, pr["branch"]) if kind == "performance" else {})}, "summary": pr["body"], "diff": pr["diff"],
+            "branch": pr["branch"], "pr_url": pr["url"], "pr_number": pr["number"], "pr_state": "open",
+            # Comments made before now were already seen by the agent that opened it; only new ones start a round.
+            "review": {"seen": [c["id"] for c in gitops.pull_request_comments(repo["full_name"], pr["number"])], "rounds": []},
+            "created_at": pr["created_at"].replace("Z", "+00:00"), "updated_at": db.now()})
+        ui = lambda t, msg=None, **payload: ui_events.emit(migration["id"], {"t": t, "msg": msg, "kind": "pressure" if kind == "performance" else None, **payload}, repo_id=repo["id"])  # noqa: E731
+        ui("stage", f"Found #{pr['number']} on GitHub, opened earlier by this project's agent", stage="patch")
+        for patch in patches:
+            ui("patch.done", f"{patch['path']} · +{patch['additions']} −{patch['deletions']}", patch=patch)
+        ui("stage", stage="pr")
+        ui("pr", f"GitHub pull request · #{pr['number']}", pr={"number": pr["number"], "title": pr["title"], "branch": pr["branch"], "base": pr["base"], "url": pr["url"],
+           "files": len(patches), "additions": sum(p["additions"] for p in patches), "deletions": sum(p["deletions"] for p in patches)})
+        ui("done", "Waiting for your review")
+        events.emit("pr.adopted", f"Tracking #{pr['number']} again: {pr['title']}", repo_id=repo["id"], migration_id=migration["id"])
+        agents.remember(repo["id"], "outcome", f"{pr['title']}: PR {pr['url']} (open, found on GitHub)")
+        adopted.append(migration["id"])
+    return adopted
+
+
 def watch_once() -> None:
     """One pass over every open pull request. New comments and merges become agent tasks."""
     for migration in open_pull_requests():

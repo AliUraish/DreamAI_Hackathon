@@ -48,7 +48,9 @@ If validation fails twice it opens an *investigation* PR that changes no applica
 
 **Follows through.** Review comments on the PR become another round of work on the same branch
 (comments from deploy and CI bots are ignored). After a merge it re-runs the checks on the base branch
-before marking the integration healthy.
+before marking the integration healthy. GitHub is the record of what was opened: when a project is
+(re)connected, open pull requests on `chowkidaar/*` branches that the database does not know are picked up and
+watched again.
 
 **One agent per repository.** Each has its own context and memory; agents run in parallel and share
 nothing. The "Agents working" panel shows who is busy and who is waiting for you.
@@ -164,7 +166,7 @@ demo/        provider/      mock Acme Orders API (v1 → v2)
 ## Tests
 
 ```bash
-cd backend && uv run pytest          # 30 tests; the end-to-end ones need the demo provider on :4010
+cd backend && uv run pytest          # 32 tests; the end-to-end ones need the demo provider on :4010
 CHOWKIDAAR_TEST_PG=postgresql://user@localhost:5432/test uv run pytest   # same suite on Postgres
 ```
 

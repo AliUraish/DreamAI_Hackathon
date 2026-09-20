@@ -172,6 +172,21 @@ def _github(method: str, path: str, **kwargs: Any) -> Any:
     return response.json() if response.content else None
 
 
+def open_pull_requests_by_prefix(full_name: str, prefix: str) -> list[dict[str, Any]]:
+    """Open pull requests whose branch starts with `prefix`, each with its diff. GitHub is the record of what was opened."""
+    token = github_token()
+    out = []
+    for pr in _github("GET", f"/repos/{full_name}/pulls", params={"state": "open", "per_page": 50}):
+        if not pr["head"]["ref"].startswith(prefix) or pr["head"]["repo"]["full_name"] != full_name:
+            continue
+        diff = httpx.get(f"https://api.github.com/repos/{full_name}/pulls/{pr['number']}", timeout=30,
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.diff"})
+        diff.raise_for_status()
+        out.append({"number": pr["number"], "title": pr["title"], "body": pr.get("body") or "", "url": pr["html_url"], "branch": pr["head"]["ref"],
+                    "base": pr["base"]["ref"], "created_at": pr["created_at"], "diff": diff.text})
+    return out
+
+
 def pull_request(full_name: str, number: int) -> dict[str, Any]:
     pr = _github("GET", f"/repos/{full_name}/pulls/{number}")
     return {"state": "merged" if pr.get("merged") else pr["state"], "merged_at": pr.get("merged_at"), "head_sha": pr["head"]["sha"],

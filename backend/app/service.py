@@ -103,6 +103,13 @@ def map_repo(repo: dict[str, Any], env: list[dict[str, Any]] | None = None) -> N
         lines.append(f"{integration['name']} {integration.get('version') or ''}: {sites}; files: {', '.join(f['path'] for f in integration['files'])}")
     checks = ", ".join(c["cmd"] for c in repo["validation_commands"] or []) or "none found"
     agents.remember(repo["id"], "pipeline", f"Repository {repo['name']} (branch {repo['default_branch']}). Checks: {checks}. Pipelines: " + " | ".join(lines))
+    try:
+        from . import prs
+        adopted = prs.adopt(repo)
+        if adopted:
+            phase("prs", f"{len(adopted)} open pull request(s) by this project's agent found on GitHub and tracked again")
+    except Exception as exc:  # GitHub being unreachable must never stop a project from connecting
+        print(f"adopt pull requests: {repo.get('full_name')}: {exc}")
     phase("done", "Pipeline context ready")
 
 

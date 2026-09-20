@@ -214,3 +214,38 @@ def test_comments_from_apps_are_not_review_feedback(monkeypatch):
     }
     monkeypatch.setattr(gitops, "_github", lambda method, path, **kwargs: pages[path])
     assert [(c["author"], c["body"]) for c in gitops.pull_request_comments("a/b", 7)] == [("ali", "Please add a timeout.")]
+
+
+def test_resetting_the_demo_never_touches_other_projects(client, tmp_path, monkeypatch):
+    """A real project's record was once lost to a demo reset that disconnected everything."""
+    from app import demo, service
+    from app.routers import api
+    monkeypatch.setattr(api, "_acme", lambda *a, **k: {"version": "v1"})
+    monkeypatch.setattr(demo, "materialize", lambda target=None: _repo(tmp_path, "demo-app", "ORDERS_API_URL=http://localhost:4010\n") if not (tmp_path / "demo-app").exists() else tmp_path / "demo-app")
+    real = service.connect_repo(local_path=str(_repo(tmp_path, "real-project", "STRIPE_SECRET_KEY=sk_test_aaaa\n")))
+    service.connect_repo(local_path=str(demo.materialize()))
+    assert client.post("/api/demo/reset").status_code == 200
+    names = {r["name"]: r["id"] for r in client.get("/api/repos").json()}
+    assert names["real-project"] == real["id"] and "demo-app" in names          # same id: it was never disconnected
+
+
+def test_open_pull_requests_are_adopted_from_github_once(client, tmp_path, monkeypatch):
+    """The database can be new while the pull requests are not. GitHub is the record; nothing about them is made up."""
+    from app import db, gitops, prs, service, ui_events
+    repo = service.connect_repo(local_path=str(_repo(tmp_path, "shop", "STRIPE_SECRET_KEY=sk_test_aaaa\n")))
+    repo = db.update("repos", repo["id"], {"full_name": "acme/shop"}) or db.get("repos", repo["id"])
+    diff = "diff --git a/src/pay.ts b/src/pay.ts\n--- a/src/pay.ts\n+++ b/src/pay.ts\n@@ -1,1 +1,2 @@\n import Stripe from \"stripe\";\n+// queue\n"
+    found = [{"number": 7, "title": "Relieve pressure on charge()", "body": "## why", "url": "https://github.com/acme/shop/pull/7",
+              "branch": "chowkidaar/relieve-pay-ts-route", "base": "main", "created_at": "2026-09-19T10:00:00Z", "diff": diff}]
+    monkeypatch.setattr(gitops, "github_token", lambda: "token")
+    monkeypatch.setattr(gitops, "open_pull_requests_by_prefix", lambda full_name, prefix: found)
+    monkeypatch.setattr(gitops, "pull_request_comments", lambda full_name, number: [{"id": 41, "body": "old", "user": "ali"}])
+
+    (migration_id,) = prs.adopt(repo)
+    migration = db.get("migrations", migration_id)
+    assert (migration["pr_number"], migration["pr_state"], migration["status"], migration["kind"]) == (7, "open", "pr_opened", "performance")
+    assert (migration["meta"]["label"], migration["meta"]["prefer"]) == ("pay.ts", "route")   # so the same review is not opened again
+    assert migration["review"]["seen"] == [41]                                     # an old comment does not start a new round
+    assert [e["t"] for e in ui_events.replay(migration_id)] == ["stage", "patch.done", "stage", "pr", "done"]
+    assert client.get("/api/dashboard").status_code == 200 and client.get(f"/api/migrations/{migration_id}").status_code == 200
+    assert migration in prs.open_pull_requests() and prs.adopt(repo) == []         # watched from now on, and never adopted twice

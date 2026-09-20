@@ -657,13 +657,16 @@ def demo_connect():
 
 @router.post("/demo/reset")
 def demo_reset():
-    """Provider back to v1, and every connected repo re-connected so baselines and statuses start clean."""
+    """Provider back to v1, and the demo project re-connected so its baseline and status start clean."""
     _acme("/admin/reset", "POST")
-    paths = [r["local_path"] for r in db.select("repos", order="created_at ASC")]
+    from .. import demo
+    # Only the demo project is reset. Any other connected project, its history and its agent's memory are left alone.
+    demo_path = str(demo.materialize())
     for repo in db.select("repos"):
-        disconnect_repo(repo["id"])
-    service._analysis_cache.clear()
-    return {"version": "v1", "repos": [service.connect_repo(local_path=path)["id"] for path in paths]}
+        if repo["local_path"] == demo_path:
+            disconnect_repo(repo["id"])
+            service._analysis_cache.pop(repo["id"], None)
+    return {"version": "v1", "repos": [service.connect_repo(local_path=demo_path)["id"]]}
 
 
 # --- provider-initiated trigger ---------------------------------------------

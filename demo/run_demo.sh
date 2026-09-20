@@ -9,7 +9,8 @@ json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 
 echo "1. reset provider to v1"; curl -s -X POST $PROVIDER/admin/reset >/dev/null
 echo "2. connect the demo project (its git repository lives under the data directory, not in this repo)"
-for id in $(curl -s $API/api/repos | json "' '.join(r['id'] for r in d)"); do curl -s -X DELETE $API/api/repos/$id; done
+# Only the demo project is ever reset. Other connected projects are never touched.
+for id in $(curl -s $API/api/repos | json "' '.join(r['id'] for r in d if '/demo/customer-app' in r['local_path'])"); do curl -s -X DELETE $API/api/repos/$id; done
 REPO=$(curl -s -X POST $API/api/demo/connect | json "d['id']")
 for _ in $(seq 1 30); do INT=$(curl -s $API/api/repos/$REPO | json "next((i['id'] for i in d['integrations'] if i['provider'] == 'acme-orders'), '')"); [ -n "$INT" ] && break; python3 -c "import time; time.sleep(1)"; done
 echo "   integration: $INT"
