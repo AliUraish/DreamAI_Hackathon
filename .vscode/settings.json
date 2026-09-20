@@ -1,0 +1,5 @@
+{
+  "git.autoRepositoryDetection": false,
+  "git.openRepositoryInParentFolders": "never",
+  "git.repositoryScanMaxDepth": 0
+}
